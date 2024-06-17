@@ -5,7 +5,7 @@ pub const KProjConfig = struct {
 
     allocator: std.mem.Allocator,
     output: []const u8,
-    files: [][]const u8,
+    files: std.ArrayList([]const u8),
     standard: union(enum) {
         @"c++14": void,
         @"c++20": void,
@@ -15,9 +15,18 @@ pub const KProjConfig = struct {
         return Self{ .allocator = allocator, .files = undefined, .output = undefined, .standard = undefined };
     }
 
+    pub fn toFile(self: Self) ![]const u8 {
+        const allocator = self.allocator;
+        const fmt = "output: {s}\nfiles: {s}\nstandard: {s}";
+        const files = try std.mem.join(allocator, " ", self.files.items);
+        defer allocator.free(files);
+
+        return std.fmt.allocPrint(allocator, fmt, .{ self.output, files, @tagName(self.standard) });
+    }
+
     pub fn deinit(self: Self) void {
         self.allocator.free(self.output);
-        self.allocator.free(self.files);
+        self.files.deinit();
     }
 };
 
@@ -36,6 +45,7 @@ fn allocSplit(comptime T: type, allocator: std.mem.Allocator, i: []const T, deli
     return al.toOwnedSlice();
 }
 
+// TODO: Refactor this shit
 fn getValue(allocator: std.mem.Allocator, comptime T: type, input: []const u8) !T {
     const ti = @typeInfo(T);
 
@@ -63,6 +73,26 @@ fn getValue(allocator: std.mem.Allocator, comptime T: type, input: []const u8) !
         if (child_ti == .Pointer and child_ti.Pointer.size == .Slice and child_ti.Pointer.child == u8) {
             return allocSplit(u8, allocator, input, " ");
         }
+    }
+
+    if (ti == .Struct and @hasField(T, "items")) {
+        inline for (std.meta.fields(T)) |fd| {
+            if (std.mem.eql(u8, fd.name, "items")) {
+                const items_ti = @typeInfo(fd.type);
+                if (items_ti == .Pointer and items_ti.Pointer.size == .Slice) {
+                    const splitted = try allocSplit(u8, allocator, input, " ");
+                    defer allocator.free(splitted);
+
+                    var al = std.ArrayList([]const u8).init(allocator);
+                    for (splitted) |item| {
+                        try al.append(item);
+                    }
+                    return al;
+                }
+            }
+        }
+
+        return error.NotYetSupported;
     }
 
     return error.UnsupportedType;
@@ -94,8 +124,8 @@ test "Should parse kproj file" {
     defer kprojConfig.deinit();
 
     try testing.expectEqualSlices(u8, "main", kprojConfig.output);
-    try testing.expectEqual(1, kprojConfig.files.len);
-    try testing.expectEqualSlices(u8, "main.cpp", kprojConfig.files[0]);
+    try testing.expectEqual(1, kprojConfig.files.items.len);
+    try testing.expectEqualSlices(u8, "main.cpp", kprojConfig.files.items[0]);
 }
 
 test "Should parse kproj file with multiple files" {
@@ -104,8 +134,8 @@ test "Should parse kproj file with multiple files" {
     defer kprojConfig.deinit();
 
     try testing.expectEqualSlices(u8, "main", kprojConfig.output);
-    try testing.expectEqual(3, kprojConfig.files.len);
-    try testing.expectEqualSlices(u8, "main.cpp", kprojConfig.files[0]);
-    try testing.expectEqualSlices(u8, "add.cpp", kprojConfig.files[1]);
-    try testing.expectEqualSlices(u8, "square.cpp", kprojConfig.files[2]);
+    try testing.expectEqual(3, kprojConfig.files.items.len);
+    try testing.expectEqualSlices(u8, "main.cpp", kprojConfig.files.items[0]);
+    try testing.expectEqualSlices(u8, "add.cpp", kprojConfig.files.items[1]);
+    try testing.expectEqualSlices(u8, "square.cpp", kprojConfig.files.items[2]);
 }

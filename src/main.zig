@@ -15,7 +15,15 @@ const Commands = union(enum) {
     init: void,
     build: void,
     run: void,
+    add: void,
 };
+
+fn fileExists(dir: std.fs.Dir, sub_path: []const u8) bool {
+    dir.access(sub_path, .{}) catch {
+        return false;
+    };
+    return true;
+}
 
 // Init command create a scaffolding of a config file and main.cpp boilerplate
 // If a path is specified all the scaffolding happens in this folder,
@@ -31,8 +39,18 @@ pub fn initCommand(command_args: [][]const u8) !void {
         dir = try dir.openDir(p, .{});
     }
 
-    _ = try dir.writeFile(".kproj", project_template);
-    _ = try dir.writeFile("main.cpp", main_cpp);
+    const project_not_empty = fileExists(dir, ".kproj");
+
+    if (project_not_empty) {
+        std.debug.print("The folder already contains a project. Would you like to continue?\n", .{});
+    }
+
+    if (!project_not_empty) {
+        _ = try dir.writeFile(".kproj", project_template);
+        if (!fileExists(dir, "main.cpp")) {
+            _ = try dir.writeFile("main.cpp", main_cpp);
+        }
+    }
 }
 
 fn buildCommand(allocator: std.mem.Allocator, command_args: [][]const u8) !void {
@@ -56,7 +74,7 @@ fn buildCommand(allocator: std.mem.Allocator, command_args: [][]const u8) !void 
     defer argv.deinit();
 
     try argv.appendSlice(&[_][]const u8{ "clang++", clang_std_arg, "-g" });
-    try argv.appendSlice(parsed_kproj.files);
+    try argv.appendSlice(parsed_kproj.files.items);
     try argv.appendSlice(&[_][]const u8{ "-o", parsed_kproj.output });
 
     const command = try std.mem.join(allocator, " ", argv.items);
@@ -89,6 +107,24 @@ fn runCommand(allocator: std.mem.Allocator, command_args: [][]const u8) !void {
     return std.process.execv(aa, &[_][]const u8{"./main"});
 }
 
+fn addCommand(allocator: std.mem.Allocator, command_args: [][]const u8) !void {
+    const kproj_file = try std.fs.cwd().openFile(".kproj", .{});
+
+    const kproj_content = try kproj_file.readToEndAlloc(allocator, std.math.maxInt(usize));
+    defer allocator.free(kproj_content);
+
+    var parsed_kproj = try kproj_reader.parseKprojFile(allocator, kproj_content);
+    defer parsed_kproj.deinit();
+
+    try parsed_kproj.files.append(command_args[0]);
+
+    const kproj_to_file = try parsed_kproj.toFile();
+    defer allocator.free(kproj_to_file);
+
+    try std.fs.cwd().writeFile(".kproj", kproj_to_file);
+    try std.fs.cwd().writeFile(command_args[0], &[_]u8{});
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer std.debug.assert(gpa.deinit() == .ok);
@@ -106,6 +142,9 @@ pub fn main() !void {
         },
         .run => {
             try runCommand(allocator, parsed_args.args);
+        },
+        .add => {
+            try addCommand(allocator, parsed_args.args);
         },
     }
 }
